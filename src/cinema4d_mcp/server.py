@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Union
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP, Context
-from starlette.routing import Route
 from starlette.responses import JSONResponse
 
 from .config import C4D_HOST, C4D_PORT
@@ -156,8 +155,42 @@ async def homepage(request):
     )
 
 
-# Initialize our FastMCP server
-mcp = FastMCP(title="Cinema4D", routes=[Route("/", endpoint=homepage)])
+# Environment-driven FastMCP configuration for HTTP transports
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name!r}: {raw!r}. Using {default} instead.")
+        return default
+
+
+_fastmcp_host = os.environ.get("FASTMCP_HOST", "127.0.0.1")
+_fastmcp_port = _env_int("FASTMCP_PORT", 8000)
+_fastmcp_json_response = _env_flag("FASTMCP_JSON_RESPONSE")
+_fastmcp_stateless_http = _env_flag("FASTMCP_STATELESS_HTTP")
+
+
+# Initialize our FastMCP server with optional HTTP customizations
+mcp = FastMCP(
+    "Cinema4D",
+    host=_fastmcp_host,
+    port=_fastmcp_port,
+    json_response=_fastmcp_json_response,
+    stateless_http=_fastmcp_stateless_http,
+)
+
+# Register health-check route on the Starlette app backing FastMCP
+mcp.custom_route("/", methods=["GET"])(homepage)
 
 
 @mcp.tool()
@@ -1118,6 +1151,48 @@ def get_connection_status() -> str:
 - **Host**: {C4D_HOST}
 - **Port**: {C4D_PORT}
 """
+
+
+def _log_stdio_instructions() -> None:
+    logger.info("MCP transport: stdio (default)")
+    logger.info("Connect via a client that launches this process and speaks MCP over STDIO (e.g. Claude Desktop).")
+
+
+def _log_streamable_http_instructions() -> None:
+    base_url = f"http://{mcp.settings.host}:{mcp.settings.port}"
+    logger.info("MCP transport: streamable-http")
+    logger.info(f"Streamable HTTP endpoint: {base_url}{mcp.settings.streamable_http_path}")
+    logger.info("Clients POST JSON-RPC (initialize, call_tool, etc.) to this endpoint and read responses from the same request.")
+    if not mcp.settings.json_response:
+        logger.info("Responses stream as text/event-stream; clients must accept SSE or enable FASTMCP_JSON_RESPONSE=1 for JSON bodies.")
+    else:
+        logger.info("Responses are JSON bodies (FASTMCP_JSON_RESPONSE enabled).")
+    if mcp.settings.stateless_http:
+        logger.info("Stateless HTTP mode is ON; each request is handled independently with no session reuse.")
+    else:
+        logger.info("Stateful HTTP mode is ON; reuse the mcp-session-id header returned by initialize.")
+
+
+def _log_sse_instructions() -> None:
+    base_url = f"http://{mcp.settings.host}:{mcp.settings.port}"
+    logger.info("MCP transport: sse")
+    logger.info(f"SSE mount path: {base_url}{mcp.settings.sse_path}")
+    logger.info(f"Message POST endpoint: {base_url}{mcp.settings.message_path}")
+
+
+def run_mcp_server(transport: str = "stdio") -> None:
+    selected = transport.strip().lower()
+    if selected == "stdio":
+        _log_stdio_instructions()
+    elif selected == "streamable-http":
+        _log_streamable_http_instructions()
+    elif selected == "sse":
+        _log_sse_instructions()
+    else:
+        raise ValueError(f"Unsupported MCP transport: {transport}")
+
+    logger.info(f"Starting FastMCP using transport '{selected}' on host {mcp.settings.host} port {mcp.settings.port}.")
+    mcp.run(transport=selected)
 
 
 mcp_app = mcp

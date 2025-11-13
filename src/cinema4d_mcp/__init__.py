@@ -2,11 +2,18 @@
 
 __version__ = "0.1.0"
 
+import os
+
 from . import server
 
-def main():
+mcp_app = server.mcp_app
+
+
+def main() -> None:
     """Main entry point for the package."""
-    server.mcp_app.run()
+    transport = os.environ.get("C4D_MCP_TRANSPORT", "stdio")
+    server.run_mcp_server(transport)
+
 
 def main_wrapper():
     """Entry point for the wrapper script."""
